@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>成形ツール QR照合</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js"></script>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,"Hiragino Sans","Meiryo",sans-serif;background:#f3f5f8;color:#1c2430;font-size:18px}
+header{display:flex;justify-content:space-between;align-items:center;padding:12px 20px;background:#1f3a5f;color:#fff}
+header h1{font-size:20px;margin:0}#clock{font-variant-numeric:tabular-nums}
+main{max-width:900px;margin:0 auto;padding:16px}
+.row{display:flex;gap:12px;flex-wrap:wrap}.row label{flex:1;min-width:200px;font-size:14px;color:#556}
+select,textarea,input{width:100%;font-size:20px;padding:12px;border:1px solid #b9c2cf;border-radius:8px;background:#fff}
+.card{display:flex;align-items:center;gap:12px;background:#fff;border:2px solid #d5dbe4;border-radius:10px;padding:12px 16px;margin-top:10px}
+.card.ok{border-color:#2e9d57}.card.ng{border-color:#d93c3c;background:#fff1f1}
+.name{width:150px;font-weight:700}.val{flex:1;font-family:monospace;font-size:20px;word-break:break-all}.val.e{color:#99a}
+button{font-size:18px;padding:12px 18px;border:0;border-radius:8px;background:#2f6fd0;color:#fff;cursor:pointer}
+button.g{background:#8a94a3}button:disabled{background:#c5cbd4}
+#banner{margin-top:14px;padding:18px;border-radius:10px;text-align:center;font-size:28px;font-weight:800;background:#e6e9ee;color:#667}
+#banner.ok{background:#2e9d57;color:#fff}#banner.ng{background:#d93c3c;color:#fff}
+.act{display:flex;gap:12px;margin-top:14px}.act .main{flex:1;font-size:22px;padding:16px}
+#scan{position:fixed;inset:0;background:#000;z-index:9;display:flex;flex-direction:column;align-items:center;color:#fff}
+#scan[hidden],dialog:not([open]){display:none}#scan video{flex:1;width:100%;min-height:0;object-fit:cover}
+#scan .bar{padding:14px;display:flex;gap:12px;align-items:center}
+dialog{width:min(640px,94vw);border:0;border-radius:12px;padding:20px}dialog h3{margin:14px 0 4px;font-size:16px}
+#st{margin-top:14px;font-size:14px;color:#556;text-align:center}
+</style></head><body>
+<header><h1>成形ツール QR照合</h1><div><span id="clock"></span> <button class="g" id="cfgBtn">設定</button></div></header>
+<main>
+<div class="row">
+<label>機械号機<select id="mc"></select></label>
+<label>照合者<select id="vf"></select></label>
+</div>
+<div id="list"></div>
+<div id="banner">未照合</div>
+<div class="act"><button class="g" id="reset">クリア</button><button class="main" id="rec" disabled>照合結果を記録</button></div>
+<div id="st"></div>
+</main>
+
+<div id="scan" hidden>
+<video id="v" playsinline muted></video><canvas id="c" hidden></canvas>
+<div class="bar"><b id="sn"></b><button class="g" id="man">手入力</button><button class="g" id="cancel">キャンセル</button></div>
+</div>
+
+<dialog id="dlg">
+<h2>設定</h2>
+<h3>照合ツール（1行1つ。追加・削除・並べ替え自由）</h3><textarea id="tTools" rows="6"></textarea>
+<h3>機械号機（1行1つ）</h3><textarea id="tMc" rows="4"></textarea>
+<h3>照合者（1行1つ）</h3><textarea id="tVf" rows="4"></textarea>
+<h3>Google Apps Script ウェブアプリURL</h3><input id="tUrl" placeholder="https://script.google.com/macros/s/.../exec">
+<div class="act"><button class="g" id="dc">閉じる</button><button class="main" id="ds">保存</button></div>
+</dialog>
+
+<script>
+const $=s=>document.querySelector(s);
+const DEF={tools:['生産指示書','品質ポイント表','現品票','成形条件表','金型'],
+ mc:Array.from({length:10},(_,i)=>(i+1)+'号機'),vf:['担当者A','担当者B','担当者C'],url:''};
+let cfg;try{cfg=Object.assign({},DEF,JSON.parse(localStorage.cfg||'{}'))}catch(e){cfg=DEF}
+let vals={},tgt=null,stream=null,raf=0;
+const lines=t=>t.split('\n').map(s=>s.trim()).filter(Boolean);
+const pad=n=>String(n).padStart(2,'0');
+const fmt=d=>`${d.getFullYear()}/${pad(d.getMonth()+1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+setInterval(()=>$('#clock').textContent=fmt(new Date()),1000);
+
+function opts(el,arr,keep){const cur=keep||el.value;el.innerHTML='<option value="">選択してください</option>'+arr.map(a=>`<option>${a}</option>`).join('');if(arr.includes(cur))el.value=cur}
+function judge(){
+  const got=cfg.tools.filter(t=>vals[t]);const cnt={};got.forEach(t=>cnt[vals[t]]=(cnt[vals[t]]||0)+1);
+  const ref=Object.keys(cnt).sort((a,b)=>cnt[b]-cnt[a])[0]||'';
+  const ng=got.filter(t=>vals[t]!==ref);
+  return{ref,ng,done:got.length===cfg.tools.length&&cfg.tools.length>0};
+}
+function render(){
+  const j=judge();
+  $('#list').innerHTML=cfg.tools.map(t=>{
+    const v=vals[t],cls=!v?'':(v===j.ref?'ok':'ng');
+    return `<div class="card ${cls}"><div class="name">${t}</div><div class="val ${v?'':'e'}">${v||'未読取'}</div><div>${cls=='ok'?'✔':cls=='ng'?'✖':''}</div><button data-t="${t}">${v?'再読取':'読取'}</button></div>`}).join('');
+  document.querySelectorAll('[data-t]').forEach(b=>b.onclick=()=>scan(b.dataset.t));
+  const b=$('#banner');
+  if(!Object.keys(vals).length){b.className='';b.textContent='未照合'}
+  else if(j.ng.length){b.className='ng';b.textContent='不一致：'+j.ng.join('、')}
+  else if(j.done){b.className='ok';b.textContent='全て一致（'+j.ref+'）'}
+  else{b.className='';b.textContent='読取中…（あと'+(cfg.tools.length-Object.keys(vals).length)+'件）'}
+  $('#rec').disabled=!(j.done&&$('#mc').value&&$('#vf').value);
+}
+async function scan(t){
+  tgt=t;$('#sn').textContent=t+' を読み取り';$('#scan').hidden=false;
+  try{stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});}
+  catch(e){alert('カメラを使用できません。HTTPS接続とカメラの許可が必要です。');return stop()}
+  const v=$('#v');v.srcObject=stream;await v.play();loop();
+}
+function loop(){
+  const v=$('#v'),c=$('#c');
+  if(v.readyState===4&&v.videoWidth){
+    const s=Math.min(1,640/v.videoWidth);c.width=v.videoWidth*s;c.height=v.videoHeight*s;
+    const x=c.getContext('2d',{willReadFrequently:true});x.drawImage(v,0,0,c.width,c.height);
+    const r=jsQR(x.getImageData(0,0,c.width,c.height).data,c.width,c.height);
+    if(r&&r.data)return got(r.data);
+  }
+  raf=requestAnimationFrame(loop);
+}
+function got(d){
+  vals[tgt]=d.trim();navigator.vibrate&&navigator.vibrate(80);stop();render();
+  const nx=cfg.tools.find(t=>!vals[t]);if(nx)setTimeout(()=>scan(nx),500);
+}
+function stop(){cancelAnimationFrame(raf);stream&&stream.getTracks().forEach(t=>t.stop());stream=null;$('#scan').hidden=true}
+$('#cancel').onclick=stop;
+$('#man').onclick=()=>{const d=prompt(tgt+' の品番を入力');if(d){cancelAnimationFrame(raf);got(d)}};
+$('#reset').onclick=()=>{vals={};render()};
+$('#mc,#vf'.split(',')[0]).onchange=render;$('#vf').onchange=render;
+
+async function flush(){
+  let q=JSON.parse(localStorage.q||'[]');
+  if(!cfg.url){$('#st').textContent=q.length?`未送信 ${q.length}件（設定でGAS URLを入力してください）`:'';return}
+  const rest=[];
+  for(const p of q){try{await fetch(cfg.url,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain'},body:JSON.stringify(p)})}catch(e){rest.push(p)}}
+  localStorage.q=JSON.stringify(rest);
+  $('#st').textContent=rest.length?`未送信 ${rest.length}件（通信回復後に自動再送）`:'送信済み（Googleドライブに記録）';
+}
+$('#rec').onclick=()=>{
+  const j=judge();
+  if(j.ng.length&&!confirm('不一致があります。このまま記録しますか？'))return;
+  const q=JSON.parse(localStorage.q||'[]');
+  q.push({time:fmt(new Date()),machine:$('#mc').value,verifier:$('#vf').value,result:j.ng.length?'NG':'OK',ref:j.ref,items:vals});
+  localStorage.q=JSON.stringify(q);vals={};render();flush();
+};
+addEventListener('online',flush);
+
+$('#cfgBtn').onclick=()=>{$('#tTools').value=cfg.tools.join('\n');$('#tMc').value=cfg.mc.join('\n');$('#tVf').value=cfg.vf.join('\n');$('#tUrl').value=cfg.url;$('#dlg').showModal()};
+$('#dc').onclick=()=>$('#dlg').close();
+$('#ds').onclick=()=>{
+  cfg={tools:lines($('#tTools').value),mc:lines($('#tMc').value),vf:lines($('#tVf').value),url:$('#tUrl').value.trim()};
+  localStorage.cfg=JSON.stringify(cfg);vals={};init();$('#dlg').close();flush();
+};
+function init(){opts($('#mc'),cfg.mc);opts($('#vf'),cfg.vf);render()}
+init();flush();
+</script></body></html>
