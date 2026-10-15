@@ -82,20 +82,30 @@ function render(){
   $('#rec').disabled=!(j.done&&$('#mc').value&&$('#vf').value);
 }
 async function scan(t){
-  tgt=t;$('#sn').textContent=t+' を読み取り';$('#scan').hidden=false;
-  try{stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});}
+  tgt=t;$('#sn').textContent=t+'：QRを画面中央に、15〜30cm離して';$('#scan').hidden=false;
+  try{stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:1920},height:{ideal:1080}}});}
   catch(e){alert('カメラを使用できません。HTTPS接続とカメラの許可が必要です。');return stop()}
   const v=$('#v');v.srcObject=stream;await v.play();loop();
 }
-function loop(){
+let bd=null,fr=0;
+try{if('BarcodeDetector' in window)bd=new BarcodeDetector({formats:['qr_code']})}catch(e){}
+async function loop(){
+  if(!stream)return;
   const v=$('#v'),c=$('#c');
-  if(v.readyState===4&&v.videoWidth){
-    const s=Math.min(1,640/v.videoWidth);c.width=v.videoWidth*s;c.height=v.videoHeight*s;
-    const x=c.getContext('2d',{willReadFrequently:true});x.drawImage(v,0,0,c.width,c.height);
-    const r=jsQR(x.getImageData(0,0,c.width,c.height).data,c.width,c.height);
-    if(r&&r.data)return got(r.data);
+  if(v.readyState===4&&v.videoWidth&&(++fr%3==0)){
+    try{
+      let d=null;
+      if(bd){const r=await bd.detect(v);if(r.length)d=r[0].rawValue}
+      if(!d&&typeof jsQR==='function'){
+        const s=Math.min(1,1280/v.videoWidth);c.width=v.videoWidth*s;c.height=v.videoHeight*s;
+        const x=c.getContext('2d',{willReadFrequently:true});x.drawImage(v,0,0,c.width,c.height);
+        const r=jsQR(x.getImageData(0,0,c.width,c.height).data,c.width,c.height);
+        if(r&&r.data)d=r.data;
+      }else if(!d&&!bd){$('#sn').textContent='読取ライブラリ未読込：通信を確認、または手入力'}
+      if(d&&stream)return got(d);
+    }catch(e){}
   }
-  raf=requestAnimationFrame(loop);
+  if(stream)raf=requestAnimationFrame(loop);
 }
 function got(d){
   vals[tgt]=d.trim();navigator.vibrate&&navigator.vibrate(80);stop();render();
