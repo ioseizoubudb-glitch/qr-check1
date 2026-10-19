@@ -10184,39 +10184,63 @@ function render(){
   else{b.className='';b.textContent='読取中…（あと'+(cfg.tools.length-Object.keys(vals).length)+'件）'}
   $('#rec').disabled=!(j.done&&$('#mc').value&&$('#vf').value);
 }
-async function scan(t){
-  tgt=t;$('#sn').textContent=t+'：QRを画面中央に、15〜30cm離して';$('#scan').hidden=false;
-  try{stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:1920},height:{ideal:1080}}});}
-  catch(e){alert('カメラを使用できません。HTTPS接続とカメラの許可が必要です。');return stop()}
-  const v=$('#v');v.srcObject=stream;await v.play();loop();
-}
-let bd=null,fr=0;
+let cam=null,bd=null,fr=0,armed=true,scanning=false,tok=0,last='',idleT=0;
 try{if('BarcodeDetector' in window)bd=new BarcodeDetector({formats:['qr_code']})}catch(e){}
-async function loop(){
-  if(!stream)return;
+const hint=()=>tgt+'（'+Object.keys(vals).length+'/'+cfg.tools.length+'）：QRを画面中央に、15〜30cm離して';
+async function getCam(){
+  if(cam&&cam.getTracks().some(t=>t.readyState==='live'))return cam;
+  cam=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:1920},height:{ideal:1080}}});
+  return cam;
+}
+function freeCam(){cam&&cam.getTracks().forEach(t=>t.stop());cam=null}
+async function scan(t){
+  clearTimeout(idleT);tgt=t;last='';armed=true;scanning=true;
+  $('#sn').textContent=hint();$('#scan').hidden=false;
+  try{const s=await getCam();const v=$('#v');if(v.srcObject!==s)v.srcObject=s;await v.play()}
+  catch(e){alert('カメラを使用できません。HTTPS接続とカメラの許可が必要です。');return close()}
+  tok++;loop(tok);
+}
+async function detect(){
   const v=$('#v'),c=$('#c');
+  if(bd){const r=await bd.detect(v);if(r.length)return r[0].rawValue}
+  if(typeof jsQR==='function'){
+    const s=Math.min(1,1280/v.videoWidth);c.width=v.videoWidth*s;c.height=v.videoHeight*s;
+    const x=c.getContext('2d',{willReadFrequently:true});x.drawImage(v,0,0,c.width,c.height);
+    const r=jsQR(x.getImageData(0,0,c.width,c.height).data,c.width,c.height);
+    return r&&r.data||null;
+  }
+  if(!bd)$('#sn').textContent='読取ライブラリ未読込：手入力をご利用ください';
+  return null;
+}
+async function loop(t){
+  if(!scanning||t!==tok)return;
+  const v=$('#v');
   if(v.readyState===4&&v.videoWidth&&(++fr%3==0)){
     try{
-      let d=null;
-      if(bd){const r=await bd.detect(v);if(r.length)d=r[0].rawValue}
-      if(!d&&typeof jsQR==='function'){
-        const s=Math.min(1,1280/v.videoWidth);c.width=v.videoWidth*s;c.height=v.videoHeight*s;
-        const x=c.getContext('2d',{willReadFrequently:true});x.drawImage(v,0,0,c.width,c.height);
-        const r=jsQR(x.getImageData(0,0,c.width,c.height).data,c.width,c.height);
-        if(r&&r.data)d=r.data;
-      }else if(!d&&!bd){$('#sn').textContent='読取ライブラリ未読込：通信を確認、または手入力'}
-      if(d&&stream)return got(d);
+      const d=await detect();
+      if(!scanning||t!==tok)return;
+      if(d){if(armed||d!==last){armed=false;return got(d)}}
+      else armed=true; // コードが画面から外れたら次を受け付ける
     }catch(e){}
   }
-  if(stream)raf=requestAnimationFrame(loop);
+  raf=requestAnimationFrame(()=>loop(t));
 }
 function got(d){
-  vals[tgt]=d.trim();navigator.vibrate&&navigator.vibrate(80);stop();render();
-  const nx=cfg.tools.find(t=>!vals[t]);if(nx)setTimeout(()=>scan(nx),500);
+  d=d.trim();vals[tgt]=d;last=d;armed=false;navigator.vibrate&&navigator.vibrate(80);render();
+  const nx=cfg.tools.find(t=>!vals[t]);
+  if(nx){ // 画面を閉じずに次のツールへ（連続読取）
+    tgt=nx;$('#sn').textContent='✔ 読取OK → 次：'+nx;
+    setTimeout(()=>{if(scanning)$('#sn').textContent=hint()},1200);
+    tok++;const t=tok;raf=requestAnimationFrame(()=>loop(t));
+  }else close();
 }
-function stop(){cancelAnimationFrame(raf);stream&&stream.getTracks().forEach(t=>t.stop());stream=null;$('#scan').hidden=true}
-$('#cancel').onclick=stop;
-$('#man').onclick=()=>{const d=prompt(tgt+' の品番を入力');if(d){cancelAnimationFrame(raf);got(d)}};
+function close(){
+  scanning=false;tok++;cancelAnimationFrame(raf);$('#scan').hidden=true;
+  clearTimeout(idleT);idleT=setTimeout(freeCam,600000); // 10分操作がなければカメラを解放
+}
+document.addEventListener('visibilitychange',()=>{if(document.hidden){close();freeCam()}});
+$('#cancel').onclick=close;
+$('#man').onclick=()=>{const d=prompt(tgt+' の品番を入力');if(d)got(d)};
 $('#reset').onclick=()=>{vals={};render()};
 $('#mc,#vf'.split(',')[0]).onchange=render;$('#vf').onchange=render;
 
